@@ -1,218 +1,123 @@
-# ERP to Tally: automatic sales bill posting
+# ERP → Tally Sync
 
-**Status (10 Oct 2026):** working on DUMMY data in a dummy Tally company on my laptop. Not connected to the live ERP or the live Tally. Going live needs my manager's approval, testing on a backup copy, and a supervised trial (see "Going live").
+**Automatic sales-bill entry from a glass factory's ERP into TallyPrime, so accounts stop typing every bill twice.**
 
-**Owner:** Disha (AI&TECH developer). Last updated 10 Oct 2026.
+![Tally Sync app window](docs/app_preview.png)
+
+*The Tally Sync window for accounts (dummy data). Green: bills already in Tally. Amber: bills the program stopped on, to be entered by hand. Tick them once entered, and the day's count is complete.*
 
 ---
 
-## 1. What this does, in one paragraph
+## The problem
 
-Today accounts type every sales bill twice: once in the ERP (esyGlass / RecEmsPro) and again in TallyPrime, about 2 hours a day. This program reads the bills from the ERP's export files and creates the same bills in Tally automatically. The ERP is not changed in any way (it is only read). Before sending a bill, the program checks that all totals match the ERP. If anything does not match, the bill is not sent; it goes to a "failed" list with the reason.
+Accounts typed every sales bill twice: once in the ERP (esyGlass / RecEmsPro), and again in TallyPrime, about two hours a day, with the usual typing mistakes (a voucher number entered twice, a wrong item, a wrong total). The ERP is a packaged product sold to many companies, so it could not be changed.
 
-## 2. How it works
+## The solution
 
+A small Python program reads the ERP's own exports and creates the same bills in TallyPrime through Tally's XML interface (port 9000). Nothing in the ERP is touched. Anything the program is not sure about, it **does not guess**: it stops that one bill, explains why in plain Hindi, and leaves it for accounts to enter by hand.
+
+```mermaid
+flowchart LR
+    A[ERP exports<br/>header, item-wise, PI] --> B[tally_itemwise.py]
+    M[glass mapping<br/>+ settings] --> B
+    B -->|checks pass| T[(TallyPrime<br/>Sales vouchers)]
+    B -->|not sure| H[Stopped bills<br/>with reason]
+    H -->|entered by hand,<br/>ticked in the app| S[(Sent list)]
+    T --> S
+    S --> C[Day's count:<br/>all bills accounted for]
 ```
-ERP export files (.xls)  ->  program checks every bill  ->  Tally (localhost:9000)
-   header, item-wise, PI        totals, names, duplicates       creates the Sales voucher
-```
 
-For each bill the program:
+## Features
 
-1. Joins the header file (one row per bill) with the item-wise file (one row per glass piece) on the invoice number.
-2. Turns each ERP glass name into the Tally stock item name (using `glass_name_mapping.csv`).
-3. Makes one stock line per glass type, with quantity in SQM (square metres).
-4. Adds separate lines for Hole, Cutout, Big Hole, Big Cutout, Freight, GST (IGST, or CGST + SGST) and Round Off.
-5. Uses the ERP invoice number as the Tally voucher number.
-6. Runs the safety checks (section 6). Only if all pass, sends the bill to Tally.
-7. Remembers every bill it sent, so it never sends the same bill twice.
+- **Item invoices, exactly like accounts make them:** one stock line per product and glass type, quantity in SQM from the ERP area, hole / cutout / freight / document charge as separate ledger lines, CGST + SGST or IGST, round off.
+- **Real Tally numbering:** voucher numbers like `SAR/7301/26-27`; the financial-year part comes from the bill date and changes by itself every April.
+- **Right sales ledger by itself:** local bills go to the local sales ledger, other-state bills to the IGST ledger; only 18% GST bills are sent.
+- **Glass name mapping:** 255 ERP glass names mapped to Tally stock items, checked line by line with accounts. Unmapped glass stops the bill instead of picking a wrong item (a wrong item means wrong stock and a wrong HSN in the GST return).
+- **GST-ready bills:** party state, registration type and place of supply are read from Tally and written into every bill, so GSTR-1 shows them as "Included", not "Uncertain".
+- **One-click app for accounts:** a dark, simple window with one main button, a table of stopped bills with the reason, and tick boxes for bills entered by hand. No commands, no copy-paste.
+- **The day's count:** every bill of the ERP file is either sent by the program, entered by hand, or listed as still waiting, so nothing is silently missed.
 
-## 3. Files in the folder
+## Safety first
 
-| File | What it is |
+The program is built so that a mistake stops a bill instead of reaching the books.
+
+| Risk | What the program does |
 |---|---|
-| `tally_itemwise.py` | **The main program.** |
-| `Tally_Sync.bat` | Double-click button that runs the program and shows the last 5 runs. |
-| `glass_name_mapping.csv` | ERP glass name to Tally stock item name. One row per glass name. |
-| `header_ANON.csv`, `items_ANON.csv` | Anonymised ERP exports for 03 Oct 2026 (dummy customer names). |
-| `PI_21Aug_03Oct_ANON.csv` | Anonymised ERP PI report (PI number and total area). Optional. |
-| `anonymise_exports.py` | Makes the anonymised copies from the real ERP exports. |
-| `create_stock_items.py` | Creates dummy stock items in TEST COMPANY. **Dummy company only.** |
-| `tally_sent_itemwise.db` | Created by the program: list of bills already sent (duplicate protection). |
-| `run_log.txt` | Created by the program: one line per run (date, time, sent, skipped, failed, total). |
-| `failed_itemwise.csv` | Created by the program: bills that were stopped, with the reason. |
-| `failed_xml\` | Created by the program: what was sent and Tally's reply, for bills Tally rejected. |
-| `tally_test.py`, `tally_invoice_test.py`, `tally_batch.py`, `bills.csv`, `check_drivers.py` | Early tests. Not needed any more. |
+| Same bill sent twice | A sent list remembers every bill; before sending, Tally is also asked which voucher numbers already exist, and those are never sent again |
+| Bill typed by hand and also by the program | Hand-entered bills are ticked in the app (or `--mark-manual`) and never sent; the duplicate check catches the rest |
+| Old bills already in a restored company | `start_from_invoice`: live mode refuses to send while it is not set |
+| Wrong item or unknown glass | The bill stops with the reason; nothing is guessed |
+| Totals do not match the ERP | Amounts are never recomputed; the bill must balance to the ERP's assessable value and net amount, round off under Rs 1 |
+| ERP bill changed after it reached Tally | Reported as CHANGED; Tally is never altered by the program |
+| Tally closed or wrong company | The run stops at once with a clear message; nothing is marked as sent |
+| Two copies running together | An operating-system lock lets only one copy run at a time |
+| Testing on real data | Dummy-only options (test date, auto-created parties, fallback item) are refused in live mode |
 
-Real (not anonymised) ERP files are kept in `C:\erp_data`, **outside OneDrive**. Never put them in this folder.
+Rollout plan: dummy company → GST test company → one week side by side in a **copy** of the real company (accounts keep typing in the real one) → go-live only with written approval and a fresh backup.
 
-## 4. One-time setup (laptop)
+## Files
 
-1. **Python** installed (3.x). Then in PowerShell:
-   ```
-   python -m pip install requests pandas xlrd
-   ```
-2. **Tally as server:** in TallyPrime, F1 Help > Settings > Connectivity > Client/Server configuration: TallyPrime acts as **Server**, port **9000**.
-3. **Dummy company "TEST COMPANY"** with: unit `SQM` (4 decimals), the stock items, party ledgers (Sundry Debtors), and the ledgers in section 5. Sales voucher type numbering = **Manual** (needed so the ERP number becomes the voucher number).
-
-Note: my laptop has TallyPrime in **Educational mode**, which only allows vouchers on the 1st, 2nd or last day of a month. That is why tests use `--test-date 01-10-2026`.
-
-## 5. Settings (top of `tally_itemwise.py`)
-
-Change settings only in this block, nowhere else.
-
-| Setting | Now (dummy) | Meaning |
-|---|---|---|
-| `TALLY_URL` | `http://localhost:9000` | Where Tally listens. |
-| `COMPANY` | `TEST COMPANY` | Tally company name, exactly. |
-| `VOUCHER_TYPE` | `Sales` | Voucher type name. |
-| `SALES_LEDGER` | `Sales` | Sales ledger used for the glass lines. |
-| `UNIT` | `SQM` | Unit of the stock items. |
-| `LEDGER_NAMES` | Output CGST / SGST / IGST, Hole, Cutout, Big Hole, Big Cutout, Freight Charges, Round Off | Ledger names in Tally. Must match exactly. |
-| `SPLIT_HOLE_CUTOUT` | `True` | ERP item amounts include Hole/Cutout; Tally shows them as separate lines. |
-| `TOLERANCE` | `0.05` | Allowed paise difference in the checks. |
-
-## 6. Safety checks (a bill is sent only if all pass)
-
-1. Glass total + freight = ERP **Ass. Value**.
-2. Ass. Value + GST + round off = ERP **Net Amt**, and round off is less than Rs 1.
-3. Not both IGST and CGST/SGST on one bill.
-4. Every glass name has a Tally stock item.
-5. Hole/Cutout total is not more than the glass total.
-6. The voucher balances (debits = credits).
-7. The bill was not sent before (`tally_sent_itemwise.db`).
-8. Tally's reply must say CREATED 1, ERRORS 0, EXCEPTIONS 0. Otherwise it counts as failed.
-
-A failed bill never stops the others. Example on 03 Oct data: bill 6647 is stopped because item total and Ass. Value differ by Rs 50 (asked accounts why).
-
-## 7. How the SQM area is decided
-
-The ERP header file has the billed **Area** of the whole bill (the real ERP number). The program always makes the Tally total SQM equal to it.
-
-| Case | Area of each glass line | Label in output |
-|---|---|---|
-| Bill has one glass type | The bill Area | `area exact` |
-| Several glass types, each PI has only one glass type | Total Area of that glass's own PIs (from the PI report) | `area exact-PI` |
-| Several glass types, PIs mixed | Bill Area shared out by piece sizes. **An estimate.** The bill narration says "glass-wise area estimated". | `area estimated` |
-
-On 03 Oct data: 20 exact, 5 exact-PI, 15 estimated. The real glass-wise area for the estimated bills is not in any ERP report; it is probably in the ERP database (needs permission, see section 12).
-
-## 8. How to run (dummy company)
-
-Tally must be open with TEST COMPANY loaded. Open PowerShell in the project folder.
-
-| What | Command |
+| File | What it does |
 |---|---|
-| Check everything, send nothing | `python tally_itemwise.py --dry-run --test-date 01-10-2026` |
-| Send all bills | `python tally_itemwise.py --test-date 01-10-2026 --create-parties` |
-| One bill only | `python tally_itemwise.py --only 6651 --test-date 01-10-2026` |
-| Show the XML of one bill | add `--show 6651` |
-| Or just | double-click `Tally_Sync.bat` |
+| `tally_itemwise.py` | The main program: reads exports, builds and checks bills, posts them to Tally |
+| `tally_sync_app.py` | The app window for accounts (runs `tally_itemwise.py` underneath) |
+| `Tally_Sync_App.bat` | Opens the app window |
+| `Tally_Sync.bat` | The same thing in a console window (backup way) |
+| `check_parties.py` | Read-only: does every ERP customer have a ledger in Tally? |
+| `check_items.py` | Read-only: does every mapped stock item exist in Tally, with the right unit? |
+| `Accept_Change.bat`, `accept_change.py` | After a CHANGED bill was corrected in Tally by hand |
+| `Forget_Bill.bat`, `forget_bill.py` | Send a bill again after deleting it in Tally |
+| `settings.ini` | Company, ledger names, file names, safety switches (no code change for live) |
+| `glass_mapping_*.csv` | ERP glass name → Tally stock item |
+| `party_mapping.csv` | ERP customer name → Tally ledger name, where they differ |
 
-Options: `--dry-run` (send nothing), `--only N` (one bill), `--show N` (print XML), `--test-date DD-MM-YYYY` (dummy company only), `--create-parties` (create missing party ledgers; **dummy company only**), `--fallback-item NAME` (use one item for unmapped glass; **testing only**), `--pi FILE` (PI report file).
+## Setup
 
-Expected on 03 Oct data: `40 created, 0 skipped, 1 failed`, total Rs 14,69,335. Trial Balance: Current Assets 14,69,335.00.
-
-## 9. Common tasks
-
-**Send one bill again** (dummy company only):
-1. Tally: Day Book, select the bill, Alt+D, Yes.
-2. Remove it from the program's memory:
+1. Install **Python 3.14** (tick "Add python.exe to PATH"; keep tcl/tk on).
+2. `pip install requests pandas xlrd openpyxl`
+3. In TallyPrime: enable the XML server on port 9000 (Connectivity), load the company.
+4. Fill `settings.ini`: company, ledgers, ERP export file names, `start_from_invoice`.
+5. Read-only checks first:
    ```
-   python -c "import sqlite3; c=sqlite3.connect('tally_sent_itemwise.db'); n=c.execute('DELETE FROM sent WHERE invoice_no=?', ('6651',)).rowcount; c.commit(); print('removed', n)"
+   python check_parties.py
+   python check_items.py
+   python tally_itemwise.py --dry-run
    ```
-3. Run with `--only 6651`.
 
-**Start again from clean** (dummy company only):
-1. Tally: Day Book, F2 date 1-10-2026, Ctrl+Space (select all), Alt+D, Yes.
-2. Rename `tally_sent_itemwise.db` (for example add `_OLD`).
-3. Send all bills again.
+## Daily use
 
-**Backup / restore Tally:** Alt+Y (Data) > Backup, path `C:\TallyBackup`. Restore: Alt+Y > Restore.
+1. Export the three ERP reports (Invoice Register gross, item wise, PI report) with the fixed file names.
+2. Double-click **Tally_Sync_App.bat** → **Tally mein bhejo**.
+3. Enter the stopped bills in Tally by hand (same ERP number and date), tick them → **Tick wale bills haath se chadh gaye**.
+4. The count shows "Sab bills Tally mein hain".
 
-**New anonymised PI file:**
+## Useful commands
+
 ```
-python anonymise_exports.py "C:\erp_data\PI_21Aug_03Oct.xls"
-Copy-Item .\anonymised\PI_21Aug_03Oct_ANON.csv .
+python tally_itemwise.py --dry-run               # check everything, send nothing
+python tally_itemwise.py --only 7351             # send one bill
+python tally_itemwise.py --show 7351             # print the XML of one bill
+python tally_itemwise.py --mark-manual 7352 7360 # bills entered by hand
+python tally_itemwise.py --settings other.ini    # another company / settings file
 ```
-When anonymising several files together, always give them in the same order (header, item-wise, PI) so the TEST PARTY numbers stay the same.
 
-## 10. Problems I met, and the fix
+## What I learned
 
-| Problem | Cause | Fix |
-|---|---|---|
-| Tally replies EXCEPTIONS 1, no reason | Ledger lines used `ALLLEDGERENTRIES.LIST` in an item invoice | Use `LEDGERENTRIES.LIST` (setting `LEDGER_TAG`) |
-| Minus round off shows "0.48" and wrong total on the invoice screen (books were right) | `ISDEEMEDPOSITIVE` was Yes on that line | Only the party line is Yes; all other lines No; the minus sign goes on AMOUNT. Learned from Tally's own export of a hand-made bill. |
-| "Ledger does not exist" | Party or ledger missing in Tally | Create it in Tally, run again (only that bill is sent) |
-| "no Tally stock item for ..." | Glass name not in `glass_name_mapping.csv` | Add the row (and the item in Tally) |
-| Tally ignores the voucher number | Numbering is Automatic | Sales voucher type: Method of numbering = Manual |
-| "Prevent creating duplicate Voucher Nos." cannot be selected | Locked on my laptop (probably Educational mode) | Program's own duplicate check is used; ask accounts about their Tally |
-| `No module named 'xlrd'` | Add-on missing | `python -m pip install xlrd` |
-| Python one-liner fails with "unterminated string" | PowerShell quotes | Use only single quotes inside the double quotes |
-| New bill not where expected in Day Book | Day Book lists bills in the order they were made | Scroll to the bottom |
-| "Negative stock" warning | No purchases in the dummy company | Only a warning in the dummy company |
-| `can't open file ...py` | Downloaded file still in Downloads | Move it into the project folder |
+- Tally's XML import is strict in small ways: `LEDGERENTRIES.LIST` (not `ALLLEDGERENTRIES.LIST`) for item invoices, `ISDEEMEDPOSITIVE` = Yes only for the party line, or a minus round off turns into a plus.
+- A bill can be created in Tally and still be "Uncertain" in GSTR-1: the company GSTIN, the unit's UQC and the party details inside the bill all have to be there.
+- The most reliable debugging method: make the same bill by hand in Tally, export it as XML, and compare it with what the program sent.
+- The hardest part was not code but data: the same glass written ten ways in the ERP, and settling with accounts which Tally item each one belongs to.
 
-## 11. Going live (only with approval)
+## Roadmap
 
-**What changes from the demo**
+- Read bills straight from the ERP database (read-only copy) instead of daily exports
+- An unattended scheduled run
+- A one-page Hindi guide next to the accounts PC
 
-| Demo | Live |
-|---|---|
-| TEST COMPANY | Accounts' real company name |
-| Anonymised CSV files | Real ERP data (daily `.xls` export, or a read-only copy of the ERP database). Not anonymised: party names must match Tally. |
-| `--test-date`, `--fallback-item`, `--create-parties` | Never used |
-| Dummy ledger and item names | Exact names from accounts' Tally |
-| Old `tally_sent_itemwise.db` | New, empty one |
+## Tech
 
-**Still to build before live**
+Python 3 · TallyPrime XML over HTTP · SQLite (sent list) · pandas / xlrd (ERP exports) · Tkinter (app window)
 
-1. **Start point:** "send only bills after invoice number X", so bills already typed by hand are not sent again.
-2. **Party name check:** a report of ERP customer names that do not match a Tally ledger, plus a party mapping file.
-3. **Settings in a separate file** (`settings.ini`), so the code is never edited on the main PC.
-4. **Read `.xls` directly** (no CSV step).
-5. A rule for bills **changed or cancelled in the ERP after being sent** (the program only creates bills, it never changes them).
+---
 
-**Steps**
-
-1. Get exact names from accounts (ledgers, stock items, voucher type, company).
-2. Make the changes above; dry run.
-3. Restore a **backup copy** of the real Tally on a test PC; send a few real days; compare with the bills accounts typed.
-4. Supervised run on the accounts PC, into a **separate copy company**.
-5. One week side by side: accounts keep typing in the real company, the program posts into the copy; compare totals daily.
-6. Go-live day (with manager approval): Tally backup, set the start invoice number, stop typing in Tally, turn on the scheduler.
-7. First weeks: check `run_log.txt` and the failed list daily. If something goes wrong, restore that day's backup.
-
-**What to copy to the main PC** (new folder, for example `C:\TallyAuto`, not in OneDrive):
-`tally_itemwise.py`, `glass_name_mapping.csv` (real names), `Tally_Sync.bat` (live line), `settings.ini`, party mapping file.
-**Do not copy:** anonymised CSVs, `anonymised\`, any `tally_sent_itemwise*.db`, `failed_*`, `run_log.txt`, `create_stock_items.py`, `anonymise_exports.py`, old test scripts.
-
-**Main PC needs:** Python + `requests` + `xlrd` (or one `.exe` built with PyInstaller if Python cannot be installed), and Tally server on port 9000.
-
-**Running by itself (Windows Task Scheduler):** Start > Task Scheduler > Create Basic Task > name "Tally Sync" > Daily > time (for example 6:00 PM) > Start a program > choose `C:\TallyAuto\Tally_Sync.bat` > Finish. Then open the task's Properties and set "Start in" to `C:\TallyAuto`. The PC must be on and Tally open at that time. Start with once a day; later every 30 minutes is possible, picking only bills older than about 1 hour (so a bill still being edited is not sent).
-
-**In `Tally_Sync.bat` for live:** remove the line with `--test-date` and use `python tally_itemwise.py`. For scheduled runs, also remove `pause` at the end so the window closes by itself.
-
-**Rules for accounts after go-live**
-- Make bills in the ERP as usual.
-- Do **not** type the same bills in Tally (they would be doubled).
-- Tally must be open at the scheduled time.
-- Check the run summary for about 5 minutes a day; create a missing party ledger or stock item when a bill is stopped, and it will go in the next run.
-
-## 12. Open items
-
-1. Exact names in accounts' Tally: Sales ledger (local and other state?), Output taxes, Freight, Round Off, voucher type, stock items; "Cutout" or "CutOut".
-2. Where the piece count is written on a Tally bill line.
-3. Bill 6647: why the Rs 50 difference.
-4. Accounts' Tally version; is "Prevent creating duplicate Voucher Nos." on; is stock maintained (negative stock).
-5. Who creates new customers and new glass types in Tally.
-6. What to do when an ERP bill is changed or cancelled after posting.
-7. How often the program should run (once a day or every 30 minutes).
-8. **Permissions from my manager:** a read-only backup copy of the ERP database (for the real glass-wise area), running the program on the accounts PC, contact with the vendor (Recursive Infotech) if needed, and who approves go-live.
-
-## 13. Rules I follow
-
-- Never write to the live ERP. The ERP is only read.
-- Never touch the live Tally without a backup copy, supervised testing and my manager's approval.
-- Real customer names and GST numbers stay out of chats and out of OneDrive. Only anonymised files are shared.
-- In the ERP never use Year Ending, Admin Edit or Option screens.
+*Built during my first job as a junior developer at a glass factory. All data in this repository is dummy data; no customer names, GST numbers or real exports are included.*
