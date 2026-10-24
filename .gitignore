@@ -1,0 +1,17 @@
+# real data and records - never commit
+*.db
+*.lock
+*.xls
+*.xlsx
+run_log.txt
+failed_itemwise.csv
+changed_after_sent.csv
+party_check.csv
+item_check.csv
+party_gst_reply.xml
+existing_vouchers_reply.xml
+failed_xml/
+old_tests/
+__pycache__/
+# accounts PC settings (real company setup; settings.ini in tally_project is the dummy TEST COMPANY one)
+settings_live.ini
